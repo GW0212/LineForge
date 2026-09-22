@@ -67,18 +67,18 @@ function readJson(req) {
 
 function buildPrompt(settings = {}) {
   const weights = {
-    1: 'very thin, delicate lines around 0.5 to 0.8 px in appearance',
-    2: 'thin clean lines',
+    1: 'very thin, delicate linework',
+    2: 'thin clean linework',
     3: 'medium clean line weight suitable for a tattoo stencil',
-    4: 'bold clear lines',
+    4: 'bold clear linework',
     5: 'very bold, strongly readable contour lines'
   };
   const details = {
-    1: 'extremely simplified; keep only the most essential silhouette and a few defining contours',
+    1: 'extremely simplified; keep only the essential silhouette and a few defining contours',
     2: 'simplified; keep major internal structure but remove small texture',
-    3: 'balanced detail; preserve defining facial/object features and major folds or patterns',
+    3: 'balanced detail; preserve defining facial or object features and major folds or patterns',
     4: 'detailed; preserve meaningful internal edges, anatomy, folds, and patterns while avoiding noise',
-    5: 'highly detailed linework; preserve most meaningful structural details but never use grayscale shading or hatching noise'
+    5: 'highly detailed structural linework while still avoiding noisy shading or sketch clutter'
   };
   const styles = {
     tattoo: 'professional tattoo stencil / tattoo transfer outline',
@@ -87,29 +87,54 @@ function buildPrompt(settings = {}) {
     minimal: 'minimalist single-ink line illustration with very clean negative space'
   };
 
-  return `Transform the provided image into a clean ${styles[settings.style] || styles.tattoo}.
+  return `Convert the provided image into a clean ${styles[settings.style] || styles.tattoo}.
 
 STRICT OUTPUT RULES:
-- White background (#FFFFFF) only.
-- Black linework (#000000) only. No color, no gray fills, no gradients, no shadows, no realistic rendering.
-- Preserve the original subject's silhouette, proportions, pose, composition, important shapes and recognizable features.
-- Use ${weights[settings.lineWeight] || weights[3]}.
+- Output must be a pure white background with black linework only.
+- No color, gray fills, gradients, shadows, realistic shading, textures, or background scenery.
+- Preserve the selected source area's silhouette, proportions, pose, composition, important shapes, and recognizable features.
+- Line weight: ${weights[settings.lineWeight] || weights[3]}.
 - Detail level: ${details[settings.detail] || details[3]}.
-- ${settings.preserveDetails ? 'Preserve important internal detail lines such as eyes, facial features, seams, folds, object boundaries, pattern-defining edges and essential texture boundaries.' : 'Remove most internal detail; prioritize silhouette and only indispensable interior contours.'}
-- Do not invent decorations, text, symbols, borders, backgrounds, extra objects or missing anatomy.
-- Do not crop the subject unless the source itself is cropped.
-- Keep large white negative-space areas completely clean.
-- The source image has already been composited onto white where it was transparent. Treat white/transparent-origin background as EMPTY SPACE: do not trace the rectangular image boundary and do not add outlines around the empty background.
-- If the subject has detached transparent cut-out edges, trace only the visible subject edge, not any former background.
-- Avoid dense cross-hatching, pencil texture, stippling and sketch construction lines.
-- The result should be directly usable as a clean tattoo stencil / base tracing reference.
+- ${settings.preserveDetails ? 'Preserve important internal lines such as eyes, facial features, seams, folds, object boundaries, and pattern-defining edges.' : 'Remove most internal detail and prioritize the silhouette plus only indispensable interior contours.'}
+- Do not invent text, symbols, borders, decorations, objects, anatomy, or scenery.
+- Do not add an outline around the rectangular image canvas.
+- Treat white areas as empty negative space whenever possible.
+- Keep the subject centered within the composition already provided by the selected crop.
+- The finished image should be directly usable as a clean tattoo stencil or tracing reference.
 
 Return only the edited image.`;
 }
 
+function mapGeminiError(status, data) {
+  const raw = data?.error?.message || data?.message || `Gemini API 오류 (${status})`;
+  if (status === 400) return { status, code: 'GEMINI_BAD_REQUEST', error: raw };
+  if (status === 401 || status === 403) {
+    return { status, code: 'GEMINI_KEY_INVALID', error: 'Gemini API 키가 올바르지 않거나 해당 프로젝트에서 이미지 모델을 사용할 권한이 없습니다. Render의 GEMINI_API_KEY와 Google AI Studio/Cloud 설정을 확인해 주세요.' };
+  }
+  if (status === 429 && /free tier|billing|quota|rate limit|limit/i.test(raw)) {
+    return { status, code: 'GEMINI_BILLING_REQUIRED', error: 'Gemini 이미지 API 사용 한도에 도달했거나 Billing 연결이 필요합니다. Google AI Studio 또는 Google Cloud 프로젝트의 과금/사용량 설정을 확인해 주세요.' };
+  }
+  if (status === 429) {
+    return { status, code: 'GEMINI_RATE_LIMIT', error: 'Gemini API 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.' };
+  }
+  return { status, code: 'GEMINI_API_ERROR', error: raw };
+}
+
+function extractImagePart(data) {
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+  for (const candidate of candidates) {
+    const parts = candidate?.content?.parts || [];
+    for (const part of parts) {
+      const inline = part.inlineData || part.inline_data;
+      if (inline?.data) return { imageBase64: inline.data, mimeType: inline.mimeType || inline.mime_type || 'image/jpeg' };
+    }
+  }
+  return null;
+}
+
 async function handleLineart(req, res) {
   if (!process.env.GEMINI_API_KEY) {
-    return json(res, 500, { error: 'GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인해 주세요.' });
+    return json(res, 500, { code: 'GEMINI_KEY_MISSING', error: 'GEMINI_API_KEY가 설정되지 않았습니다. Render의 Environment에서 API 키를 입력해 주세요.' });
   }
 
   try {
@@ -118,53 +143,36 @@ async function handleLineart(req, res) {
     if (!imageBase64 || typeof imageBase64 !== 'string') return json(res, 400, { error: '이미지 데이터가 없습니다.' });
     if (!/^image\/(png|jpeg|webp)$/.test(mimeType)) return json(res, 400, { error: '지원하지 않는 이미지 형식입니다.' });
 
-    const apiResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    const model = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.0-flash-preview-image-generation';
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+    const payload = {
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: buildPrompt(settings) },
+          { inlineData: { mimeType, data: imageBase64 } }
+        ]
+      }],
+      generationConfig: {
+        responseModalities: ['TEXT', 'IMAGE']
+      }
+    };
+
+    const apiResponse = await fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'x-goog-api-key': process.env.GEMINI_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
-        input: [
-          { type: 'image', mime_type: mimeType, data: imageBase64 },
-          { type: 'text', text: buildPrompt(settings) }
-        ],
-        response_format: {
-          type: 'image',
-          mime_type: 'image/jpeg',
-          image_size: process.env.GEMINI_IMAGE_SIZE || '1K'
-        }
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
 
     const data = await apiResponse.json().catch(() => ({}));
     if (!apiResponse.ok) {
-      const message = data?.error?.message || data?.message || `Gemini API 오류 (${apiResponse.status})`;
-      const quotaBlocked = apiResponse.status === 429 && /free.?tier|quota|rate.?limit|limit:\s*0/i.test(message);
-      if (quotaBlocked) {
-        return json(res, 429, {
-          code: 'GEMINI_BILLING_REQUIRED',
-          error: '현재 Gemini 이미지 모델은 무료 등급에서 사용할 수 없습니다. Google AI Studio에서 이 API 키가 속한 프로젝트에 Billing을 연결한 뒤 다시 시도해 주세요.'
-        });
-      }
-      return json(res, apiResponse.status, { error: message });
+      const mapped = mapGeminiError(apiResponse.status, data);
+      return json(res, mapped.status, { code: mapped.code, error: mapped.error });
     }
 
-    let image = data?.output_image;
-    if (!image?.data && Array.isArray(data?.steps)) {
-      outer: for (const step of data.steps) {
-        for (const content of step?.content || []) {
-          if (content?.type === 'image' && content?.data) {
-            image = content;
-            break outer;
-          }
-        }
-      }
-    }
-
-    if (!image?.data) return json(res, 502, { error: 'Gemini 응답에서 생성된 이미지를 찾지 못했습니다.' });
-    return json(res, 200, { imageBase64: image.data, mimeType: image.mime_type || 'image/jpeg' });
+    const image = extractImagePart(data);
+    if (!image) return json(res, 502, { error: 'Gemini 응답에서 생성된 이미지를 찾지 못했습니다.' });
+    return json(res, 200, { imageBase64: image.imageBase64, mimeType: image.mimeType, model });
   } catch (error) {
     console.error('[lineart]', error);
     return json(res, error.status || 500, { error: error.message || '서버 오류가 발생했습니다.' });
@@ -195,7 +203,11 @@ function serveStatic(req, res) {
 
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/api/status') {
-    return json(res, 200, { configured: Boolean(process.env.GEMINI_API_KEY), model: process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image' });
+    return json(res, 200, {
+      configured: Boolean(process.env.GEMINI_API_KEY),
+      provider: 'Gemini',
+      model: process.env.GEMINI_IMAGE_MODEL || 'gemini-2.0-flash-preview-image-generation'
+    });
   }
   if (req.method === 'POST' && req.url === '/api/lineart') return handleLineart(req, res);
   if (req.method === 'GET') return serveStatic(req, res);
@@ -205,5 +217,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`LINEFORGE running: http://localhost:${PORT}`);
-  if (!process.env.GEMINI_API_KEY) console.warn('⚠ GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.');
+  if (!process.env.GEMINI_API_KEY) console.warn('⚠ GEMINI_API_KEY is not set. Add it to Render Environment or .env.');
 });

@@ -388,13 +388,32 @@ html[data-theme="dark"] .stage-inner {
   overflow: hidden;
   z-index: 4;
   touch-action: none;
+  cursor: crosshair;
 }
 .selection-layer.visible { display: block; }
+.selection-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(0,0,0,.62);
+  color: #ffffff;
+  font-size: .9rem;
+  text-align: center;
+  line-height: 1.45;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100% - 24px);
+}
+.selection-hint[hidden] { display: none; }
 .selection-box {
   position: absolute;
   border: 2px solid #ffffff;
   box-shadow: 0 0 0 9999px rgba(0,0,0,.54), 0 0 0 1px rgba(0,0,0,.7);
   cursor: move;
+  display: none;
   touch-action: none;
   min-width: 18px;
   min-height: 18px;
@@ -973,5 +992,13 @@ select {
   .crop-footer .apply-btn {
     width: 100%;
     min-height: 46px;
+  }
+}
+
+@media (max-width: 680px) {
+  .selection-hint {
+    font-size: .82rem;
+    white-space: normal;
+    width: calc(100% - 20px);
   }
 }

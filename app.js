@@ -25,6 +25,7 @@ const cropStageInner = $('#cropStageInner');
 const selectionLayer = $('#selectionLayer');
 const selectionBox = $('#selectionBox');
 const selectionSize = $('#selectionSize');
+const selectionHint = $('#selectionHint');
 const cropCloseBtn = $('#cropCloseBtn');
 const cancelCropBtn = $('#cancelCropBtn');
 const selectAllBtn = $('#selectAllBtn');
@@ -39,7 +40,7 @@ const toast = $('#toast');
 const apiBadge = $('#apiBadge');
 
 const MAX_FILE_SIZE = 15 * 1024 * 1024;
-const MIN_SELECTION = 0.08;
+const MIN_SELECTION = 0.05;
 const weightLabels = ['매우 얇게', '얇게', '보통', '굵게', '매우 굵게'];
 const detailLabels = ['매우 단순', '단순', '균형', '정밀', '매우 정밀'];
 
@@ -53,8 +54,11 @@ const state = {
   resultUrl: '',
   compareMode: false,
   processing: false,
-  selection: { x: 0, y: 0, w: 1, h: 1 },
-  drag: null
+  selection: null,
+  cropViewport: null,
+  drag: null,
+  apiConfigured: false,
+  apiModel: ''
 };
 
 function setTheme(theme) {
@@ -63,7 +67,7 @@ function setTheme(theme) {
   document.querySelector('meta[name="theme-color"]').setAttribute('content', theme === 'dark' ? '#10110f' : '#f5f5f3');
 }
 
-function toastMessage(message, duration = 2400) {
+function toastMessage(message, duration = 2600) {
   toast.textContent = message;
   toast.classList.add('show');
   clearTimeout(toastMessage.t);
@@ -75,15 +79,32 @@ function setStatus(type, text) {
   statusBadge.textContent = text;
 }
 
+function updateApiBadge(configured, model = '') {
+  state.apiConfigured = configured;
+  state.apiModel = model || '';
+  apiBadge.classList.remove('ready', 'warning');
+  if (configured) {
+    apiBadge.classList.add('ready');
+    apiBadge.innerHTML = '<i></i><span>API 연결됨</span>';
+  } else {
+    apiBadge.classList.add('warning');
+    apiBadge.innerHTML = '<i></i><span>API 미연결</span>';
+  }
+}
+
 function updateActionHint() {
   if (!state.fullCanvas) {
     actionHintTitle.textContent = '이미지를 먼저 업로드해 주세요.';
-    actionHintText.textContent = 'API 없이 브라우저 안에서 선화 변환이 진행됩니다.';
+    actionHintText.textContent = state.apiConfigured
+      ? 'Gemini API로 선택한 영역을 라인아트로 변환합니다.'
+      : 'Render 환경변수의 GEMINI_API_KEY 연결 여부를 먼저 확인해 주세요.';
     return;
   }
-  const { width, height } = state.selectedCanvas || state.fullCanvas;
-  actionHintTitle.textContent = '선택한 영역을 브라우저에서 바로 선화로 변환합니다.';
-  actionHintText.textContent = `현재 선택 영역: ${width} × ${height} · 외부 API 없이 무료로 처리됩니다.`;
+  const activeCanvas = state.selectedCanvas || state.fullCanvas;
+  const { width, height } = activeCanvas;
+  const selectionText = state.selection ? `선택 영역 ${width} × ${height}` : `전체 이미지 ${width} × ${height}`;
+  actionHintTitle.textContent = '선택한 영역만 Gemini API로 변환합니다.';
+  actionHintText.textContent = `${selectionText} · ${state.apiModel || 'Gemini 이미지 모델'} · 흰 배경 + 검은 선 중심으로 정리합니다.`;
 }
 
 function formatBytes(bytes) {
@@ -96,7 +117,12 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function hasSelection() {
+  return !!state.selection && state.selection.w > 0 && state.selection.h > 0;
+}
+
 function isFullSelection() {
+  if (!hasSelection()) return true;
   const { x, y, w, h } = state.selection;
   return Math.abs(x) < 0.001 && Math.abs(y) < 0.001 && Math.abs(w - 1) < 0.001 && Math.abs(h - 1) < 0.001;
 }
@@ -111,16 +137,31 @@ function canvasToBlob(canvas, type = 'image/png', quality = 0.96) {
   });
 }
 
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+}
+
+async function imageBase64FromCanvas(canvas) {
+  const blob = await canvasToBlob(canvas, 'image/png', 0.96);
+  const buffer = await blob.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 async function fileToImage(file) {
   const url = URL.createObjectURL(file);
   try {
-    const img = await new Promise((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = reject;
-      image.src = url;
-    });
-    return img;
+    return await loadImage(url);
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -149,7 +190,7 @@ function updateSourceMeta() {
   }
   const full = `${state.fullCanvas.width} × ${state.fullCanvas.height}`;
   const selected = `${state.selectedCanvas.width} × ${state.selectedCanvas.height}`;
-  const selectionLabel = isFullSelection() ? '전체 이미지' : `선택 ${selected}`;
+  const selectionLabel = !hasSelection() || isFullSelection() ? '전체 이미지' : `선택 ${selected}`;
   sourceMeta.textContent = `${selectionLabel} · 원본 ${full} · ${formatBytes(state.originalSize)}`;
 }
 
@@ -162,7 +203,7 @@ function updateSourcePreview() {
   updateSourceMeta();
   cropBtn.disabled = false;
   resetBtn.disabled = false;
-  generateBtn.disabled = false;
+  generateBtn.disabled = !state.apiConfigured;
   updateActionHint();
 }
 
@@ -186,7 +227,8 @@ function resetAll(showMessage = true) {
   state.sourceUrl = '';
   state.resultUrl = '';
   state.compareMode = false;
-  state.selection = { x: 0, y: 0, w: 1, h: 1 };
+  state.selection = null;
+  state.cropViewport = null;
   state.drag = null;
   fileInput.value = '';
   sourceImage.removeAttribute('src');
@@ -199,11 +241,39 @@ function resetAll(showMessage = true) {
   generateBtn.disabled = true;
   setStatus('idle', '대기 중');
   updateActionHint();
+  renderSelection();
   if (showMessage) toastMessage('작업을 초기화했습니다.');
 }
 
+function updateCropViewport() {
+  if (!state.fullCanvas) return;
+  const stageRect = cropStageInner.getBoundingClientRect();
+  const stageW = stageRect.width;
+  const stageH = stageRect.height;
+  const imgW = state.fullCanvas.width;
+  const imgH = state.fullCanvas.height;
+  const scale = Math.min(stageW / imgW, stageH / imgH);
+  const width = imgW * scale;
+  const height = imgH * scale;
+  const left = (stageW - width) / 2;
+  const top = (stageH - height) / 2;
+  state.cropViewport = { left, top, width, height };
+  selectionLayer.style.left = `${left}px`;
+  selectionLayer.style.top = `${top}px`;
+  selectionLayer.style.width = `${width}px`;
+  selectionLayer.style.height = `${height}px`;
+  renderSelection();
+}
+
 function renderSelection() {
+  if (!hasSelection()) {
+    selectionBox.style.display = 'none';
+    selectionHint.hidden = false;
+    return;
+  }
   const s = state.selection;
+  selectionBox.style.display = 'block';
+  selectionHint.hidden = true;
   selectionBox.style.left = `${s.x * 100}%`;
   selectionBox.style.top = `${s.y * 100}%`;
   selectionBox.style.width = `${s.w * 100}%`;
@@ -218,9 +288,13 @@ function setFullSelection() {
   renderSelection();
 }
 
+function getActiveSelectionOrFull() {
+  return hasSelection() ? state.selection : { x: 0, y: 0, w: 1, h: 1 };
+}
+
 function getCroppedCanvas() {
   const source = state.fullCanvas;
-  const { x, y, w, h } = state.selection;
+  const { x, y, w, h } = getActiveSelectionOrFull();
   const sx = Math.max(0, Math.round(source.width * x));
   const sy = Math.max(0, Math.round(source.height * y));
   const sw = Math.max(1, Math.round(source.width * w));
@@ -238,8 +312,9 @@ function getCroppedCanvas() {
 function enterCropMode() {
   if (!state.fullCanvas) return;
   cropPreviewImage.src = dataUrlFromCanvas(state.fullCanvas);
-  renderSelection();
   if (!cropDialog.open) cropDialog.showModal();
+  requestAnimationFrame(updateCropViewport);
+  renderSelection();
 }
 
 function exitCropMode() {
@@ -250,6 +325,10 @@ async function applyCropSelection() {
   if (!state.fullCanvas) return;
   applyCropBtn.disabled = true;
   try {
+    if (!hasSelection()) {
+      toastMessage('이미지 위를 드래그해서 영역을 먼저 선택해 주세요.');
+      return;
+    }
     state.selectedCanvas = getCroppedCanvas();
     updateSourcePreview();
     clearResult();
@@ -272,67 +351,76 @@ function getPointerPoint(event) {
   };
 }
 
-function onSelectionPointerDown(event) {
-  event.preventDefault();
-  const handle = event.target.closest('[data-handle]')?.dataset.handle || 'move';
+function startSelectionDrag(event) {
+  if (!state.fullCanvas) return;
   const point = getPointerPoint(event);
-  state.drag = {
-    pointerId: event.pointerId,
-    handle,
-    start: point,
-    initial: { ...state.selection }
-  };
-  selectionBox.setPointerCapture(event.pointerId);
+  const handle = event.target.closest('[data-handle]')?.dataset.handle;
+  const onExistingBox = event.target === selectionBox || event.target.closest('#selectionBox');
+
+  if (handle && hasSelection()) {
+    state.drag = { pointerId: event.pointerId, mode: 'resize', handle, start: point, initial: { ...state.selection } };
+  } else if (onExistingBox && hasSelection()) {
+    state.drag = { pointerId: event.pointerId, mode: 'move', start: point, initial: { ...state.selection } };
+  } else {
+    state.selection = { x: point.x, y: point.y, w: 0, h: 0 };
+    state.drag = { pointerId: event.pointerId, mode: 'create', start: point };
+    renderSelection();
+  }
+
+  selectionLayer.setPointerCapture(event.pointerId);
+  event.preventDefault();
 }
 
 function onSelectionPointerMove(event) {
   if (!state.drag || state.drag.pointerId !== event.pointerId) return;
-  event.preventDefault();
   const point = getPointerPoint(event);
-  const dx = point.x - state.drag.start.x;
-  const dy = point.y - state.drag.start.y;
   const initial = state.drag.initial;
 
-  if (state.drag.handle === 'move') {
+  if (state.drag.mode === 'create') {
+    const left = Math.min(state.drag.start.x, point.x);
+    const top = Math.min(state.drag.start.y, point.y);
+    const right = Math.max(state.drag.start.x, point.x);
+    const bottom = Math.max(state.drag.start.y, point.y);
+    state.selection = { x: left, y: top, w: right - left, h: bottom - top };
+  } else if (state.drag.mode === 'move' && initial) {
+    const dx = point.x - state.drag.start.x;
+    const dy = point.y - state.drag.start.y;
     state.selection.x = clamp(initial.x + dx, 0, 1 - initial.w);
     state.selection.y = clamp(initial.y + dy, 0, 1 - initial.h);
-  } else {
+    state.selection.w = initial.w;
+    state.selection.h = initial.h;
+  } else if (state.drag.mode === 'resize' && initial) {
     let left = initial.x;
     let top = initial.y;
     let right = initial.x + initial.w;
     let bottom = initial.y + initial.h;
-
-    if (state.drag.handle.includes('w')) left = clamp(initial.x + dx, 0, right - MIN_SELECTION);
-    if (state.drag.handle.includes('e')) right = clamp(initial.x + initial.w + dx, left + MIN_SELECTION, 1);
-    if (state.drag.handle.includes('n')) top = clamp(initial.y + dy, 0, bottom - MIN_SELECTION);
-    if (state.drag.handle.includes('s')) bottom = clamp(initial.y + initial.h + dy, top + MIN_SELECTION, 1);
-
-    state.selection.x = left;
-    state.selection.y = top;
-    state.selection.w = right - left;
-    state.selection.h = bottom - top;
+    if (state.drag.handle.includes('w')) left = clamp(point.x, 0, right - MIN_SELECTION);
+    if (state.drag.handle.includes('e')) right = clamp(point.x, left + MIN_SELECTION, 1);
+    if (state.drag.handle.includes('n')) top = clamp(point.y, 0, bottom - MIN_SELECTION);
+    if (state.drag.handle.includes('s')) bottom = clamp(point.y, top + MIN_SELECTION, 1);
+    state.selection = { x: left, y: top, w: right - left, h: bottom - top };
   }
+
   renderSelection();
+  event.preventDefault();
 }
 
 function onSelectionPointerEnd(event) {
   if (!state.drag || state.drag.pointerId !== event.pointerId) return;
-  try { selectionBox.releasePointerCapture(event.pointerId); } catch {}
+  try { selectionLayer.releasePointerCapture(event.pointerId); } catch {}
+  if (state.drag.mode === 'create' && state.selection) {
+    if (state.selection.w < 0.01 || state.selection.h < 0.01) {
+      state.selection = null;
+      toastMessage('드래그해서 선택 박스를 만들어 주세요.');
+    } else {
+      state.selection.w = Math.max(state.selection.w, MIN_SELECTION);
+      state.selection.h = Math.max(state.selection.h, MIN_SELECTION);
+      state.selection.x = clamp(state.selection.x, 0, 1 - state.selection.w);
+      state.selection.y = clamp(state.selection.y, 0, 1 - state.selection.h);
+    }
+  }
   state.drag = null;
-}
-
-function downscaleCanvas(sourceCanvas, maxSide = 1600) {
-  const { width, height } = sourceCanvas;
-  const scale = Math.min(1, maxSide / Math.max(width, height));
-  if (scale >= 1) return sourceCanvas;
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(width * scale));
-  canvas.height = Math.max(1, Math.round(height * scale));
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(sourceCanvas, 0, 0, canvas.width, canvas.height);
-  return canvas;
+  renderSelection();
 }
 
 function buildSettings() {
@@ -342,181 +430,6 @@ function buildSettings() {
     style: styleSelect.value,
     preserveDetails: preserveDetails.checked
   };
-}
-
-function boxBlur(data, width, height, radius) {
-  if (radius <= 0) return data.slice();
-  const tmp = new Float32Array(width * height);
-  const out = new Float32Array(width * height);
-
-  for (let y = 0; y < height; y++) {
-    let sum = 0;
-    for (let ix = -radius; ix <= radius; ix++) {
-      sum += data[y * width + clamp(ix, 0, width - 1)];
-    }
-    for (let x = 0; x < width; x++) {
-      tmp[y * width + x] = sum / (radius * 2 + 1);
-      const removeIndex = clamp(x - radius, 0, width - 1);
-      const addIndex = clamp(x + radius + 1, 0, width - 1);
-      sum += data[y * width + addIndex] - data[y * width + removeIndex];
-    }
-  }
-
-  for (let x = 0; x < width; x++) {
-    let sum = 0;
-    for (let iy = -radius; iy <= radius; iy++) {
-      sum += tmp[clamp(iy, 0, height - 1) * width + x];
-    }
-    for (let y = 0; y < height; y++) {
-      out[y * width + x] = sum / (radius * 2 + 1);
-      const removeIndex = clamp(y - radius, 0, height - 1);
-      const addIndex = clamp(y + radius + 1, 0, height - 1);
-      sum += tmp[addIndex * width + x] - tmp[removeIndex * width + x];
-    }
-  }
-  return out;
-}
-
-function computeSobel(gray, width, height) {
-  const out = new Float32Array(width * height);
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const i = y * width + x;
-      const tl = gray[i - width - 1];
-      const tc = gray[i - width];
-      const tr = gray[i - width + 1];
-      const ml = gray[i - 1];
-      const mr = gray[i + 1];
-      const bl = gray[i + width - 1];
-      const bc = gray[i + width];
-      const br = gray[i + width + 1];
-      const gx = -tl - 2 * ml - bl + tr + 2 * mr + br;
-      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
-      out[i] = Math.hypot(gx, gy);
-    }
-  }
-  return out;
-}
-
-function removeSpeckles(mask, width, height, passes = 1) {
-  let current = mask;
-  for (let pass = 0; pass < passes; pass++) {
-    const next = current.slice();
-    for (let y = 1; y < height - 1; y++) {
-      for (let x = 1; x < width - 1; x++) {
-        const i = y * width + x;
-        if (!current[i]) continue;
-        let neighbors = 0;
-        for (let oy = -1; oy <= 1; oy++) {
-          for (let ox = -1; ox <= 1; ox++) {
-            if (!ox && !oy) continue;
-            if (current[(y + oy) * width + (x + ox)]) neighbors++;
-          }
-        }
-        if (neighbors <= 1) next[i] = 0;
-      }
-    }
-    current = next;
-  }
-  return current;
-}
-
-function dilate(mask, width, height, passes = 1) {
-  let current = mask;
-  for (let pass = 0; pass < passes; pass++) {
-    const next = current.slice();
-    for (let y = 1; y < height - 1; y++) {
-      for (let x = 1; x < width - 1; x++) {
-        const i = y * width + x;
-        if (current[i]) continue;
-        let neighbors = 0;
-        for (let oy = -1; oy <= 1; oy++) {
-          for (let ox = -1; ox <= 1; ox++) {
-            if (!ox && !oy) continue;
-            if (current[(y + oy) * width + (x + ox)]) neighbors++;
-          }
-        }
-        if (neighbors >= 2) next[i] = 1;
-      }
-    }
-    current = next;
-  }
-  return current;
-}
-
-function convertToLineArt(sourceCanvas, options) {
-  const stylePresets = {
-    tattoo: { edgeBase: 76, detailBase: 18, blurBase: 2.2, cleanup: 2, extraThick: 1 },
-    contour: { edgeBase: 66, detailBase: 15, blurBase: 1.8, cleanup: 1, extraThick: 0 },
-    technical: { edgeBase: 58, detailBase: 12, blurBase: 1.2, cleanup: 0, extraThick: 0 },
-    minimal: { edgeBase: 85, detailBase: 20, blurBase: 2.9, cleanup: 2, extraThick: -1 }
-  };
-  const preset = stylePresets[options.style] || stylePresets.tattoo;
-
-  const working = downscaleCanvas(sourceCanvas, 1600);
-  const width = working.width;
-  const height = working.height;
-  const ctx = working.getContext('2d', { willReadFrequently: true });
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const src = imageData.data;
-  const gray = new Float32Array(width * height);
-
-  for (let i = 0, p = 0; i < src.length; i += 4, p++) {
-    const r = src[i], g = src[i + 1], b = src[i + 2];
-    gray[p] = r * 0.299 + g * 0.587 + b * 0.114;
-  }
-
-  const blurRadius = Math.max(1, Math.round(preset.blurBase + (5 - options.detail) * 0.6));
-  const blurred = boxBlur(gray, width, height, blurRadius);
-  const edges = computeSobel(blurred, width, height);
-  const largeBlur = boxBlur(gray, width, height, blurRadius + 2);
-
-  let maxEdge = 0;
-  for (let i = 0; i < edges.length; i++) if (edges[i] > maxEdge) maxEdge = edges[i];
-  maxEdge = Math.max(maxEdge, 1);
-
-  const edgeThreshold = preset.edgeBase + (5 - options.detail) * 6;
-  const detailThreshold = preset.detailBase + (5 - options.detail) * 1.4;
-  const contrastThreshold = 9 + (5 - options.detail) * 1.2;
-  const mask = new Uint8Array(width * height);
-
-  for (let i = 0; i < gray.length; i++) {
-    const edgeNorm = (edges[i] / maxEdge) * 255;
-    const localContrast = Math.abs(gray[i] - blurred[i]);
-    const shapeContrast = Math.abs(gray[i] - largeBlur[i]);
-    let ink = edgeNorm > edgeThreshold;
-
-    if (options.preserveDetails && edgeNorm > edgeThreshold * 0.45 && localContrast > detailThreshold) ink = true;
-    if (options.style === 'tattoo' && shapeContrast > contrastThreshold + 10 && edgeNorm > edgeThreshold * 0.55) ink = true;
-    if (options.style === 'technical' && localContrast > detailThreshold - 2 && edgeNorm > edgeThreshold * 0.35) ink = true;
-    if (options.style === 'minimal' && edgeNorm < edgeThreshold + 12) ink = false;
-    if (options.style === 'contour' && shapeContrast > contrastThreshold + 4 && edgeNorm > edgeThreshold * 0.5) ink = true;
-
-    mask[i] = ink ? 1 : 0;
-  }
-
-  const cleanupPasses = preset.cleanup + (options.detail <= 2 ? 1 : 0);
-  let processed = removeSpeckles(mask, width, height, cleanupPasses);
-  const dilationPasses = Math.max(0, options.lineWeight - 2 + preset.extraThick);
-  if (dilationPasses > 0) processed = dilate(processed, width, height, dilationPasses);
-  processed = removeSpeckles(processed, width, height, 1);
-
-  const outCanvas = document.createElement('canvas');
-  outCanvas.width = width;
-  outCanvas.height = height;
-  const outCtx = outCanvas.getContext('2d', { willReadFrequently: true });
-  const outImage = outCtx.createImageData(width, height);
-  const out = outImage.data;
-
-  for (let i = 0, p = 0; p < processed.length; p++, i += 4) {
-    const value = processed[p] ? 0 : 255;
-    out[i] = value;
-    out[i + 1] = value;
-    out[i + 2] = value;
-    out[i + 3] = 255;
-  }
-  outCtx.putImageData(outImage, 0, 0);
-  return outCanvas;
 }
 
 async function handleFile(file) {
@@ -535,13 +448,13 @@ async function handleFile(file) {
     state.originalName = file.name || 'lineforge-image';
     state.originalSize = file.size;
     state.fullCanvas = canvas;
-    state.selection = { x: 0, y: 0, w: 1, h: 1 };
-    state.selectedCanvas = getCroppedCanvas();
+    state.selection = null;
+    state.selectedCanvas = canvas;
     updateSourcePreview();
     clearResult();
-    setStatus('idle', '변환 가능');
+    setStatus('idle', state.apiConfigured ? '변환 가능' : 'API 확인 필요');
     enterCropMode();
-    toastMessage('이미지를 불러왔습니다. 영역을 선택해 주세요.');
+    toastMessage('이미지를 불러왔습니다. 드래그해서 변환할 영역을 선택해 주세요.');
   } catch (error) {
     console.error(error);
     toastMessage('이미지를 읽는 중 오류가 발생했습니다.');
@@ -549,16 +462,50 @@ async function handleFile(file) {
   }
 }
 
+async function renderCanvasFromBase64(imageBase64, mimeType = 'image/jpeg') {
+  const image = await loadImage(`data:${mimeType};base64,${imageBase64}`);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, 0, 0);
+  return canvas;
+}
+
 async function generateLineArt() {
   if (!state.selectedCanvas || state.processing) return;
+  if (!state.apiConfigured) {
+    toastMessage('Gemini API가 연결되지 않았습니다. Render의 GEMINI_API_KEY를 확인해 주세요.');
+    return;
+  }
+
   state.processing = true;
   generateBtn.disabled = true;
   loadingOverlay.classList.add('active');
   loadingOverlay.setAttribute('aria-hidden', 'false');
   setStatus('working', '변환 중');
+
   try {
-    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 20)));
-    const outputCanvas = convertToLineArt(state.selectedCanvas, buildSettings());
+    const imageBase64 = await imageBase64FromCanvas(state.selectedCanvas);
+    const response = await fetch('/api/lineart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64,
+        mimeType: 'image/png',
+        width: state.selectedCanvas.width,
+        height: state.selectedCanvas.height,
+        settings: buildSettings()
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Gemini API 변환에 실패했습니다.');
+    if (!data.imageBase64) throw new Error('Gemini 응답에서 이미지 데이터를 찾지 못했습니다.');
+
+    const outputCanvas = await renderCanvasFromBase64(data.imageBase64, data.mimeType || 'image/jpeg');
     state.resultCanvas = outputCanvas;
     state.resultUrl = dataUrlFromCanvas(outputCanvas);
     resultImage.src = state.resultUrl;
@@ -568,16 +515,16 @@ async function generateLineArt() {
     compareBtn.disabled = false;
     downloadBtn.disabled = false;
     setStatus('ready', '완료');
-    toastMessage('브라우저 선화 변환이 완료되었습니다.');
+    toastMessage('Gemini 라인아트 변환이 완료되었습니다.');
   } catch (error) {
     console.error(error);
     clearResult();
     setStatus('error', '오류');
-    toastMessage('선화 변환 중 오류가 발생했습니다.');
+    toastMessage(error.message || '선화 변환 중 오류가 발생했습니다.', 3400);
   } finally {
     loadingOverlay.classList.remove('active');
     loadingOverlay.setAttribute('aria-hidden', 'true');
-    generateBtn.disabled = !state.selectedCanvas;
+    generateBtn.disabled = !state.selectedCanvas || !state.apiConfigured;
     state.processing = false;
   }
 }
@@ -603,19 +550,25 @@ async function downloadResult() {
   URL.revokeObjectURL(url);
 }
 
-// init
+async function fetchStatus() {
+  try {
+    const response = await fetch('/api/status', { cache: 'no-store' });
+    const data = await response.json();
+    updateApiBadge(Boolean(data.configured), data.model || '');
+    updateActionHint();
+    if (!data.configured) setStatus('error', 'API 확인 필요');
+  } catch {
+    updateApiBadge(false);
+    updateActionHint();
+    setStatus('error', '서버 확인 필요');
+  }
+}
+
 setTheme(localStorage.getItem('lineforge-theme') || 'light');
-apiBadge.classList.add('ready');
-apiBadge.querySelector('span').textContent = '브라우저 처리';
 lineWeightValue.textContent = weightLabels[Number(lineWeight.value) - 1];
 detailValue.textContent = detailLabels[Number(detailLevel.value) - 1];
-updateActionHint();
-
-// events
-selectionBox.addEventListener('pointerdown', onSelectionPointerDown);
-selectionBox.addEventListener('pointermove', onSelectionPointerMove);
-selectionBox.addEventListener('pointerup', onSelectionPointerEnd);
-selectionBox.addEventListener('pointercancel', onSelectionPointerEnd);
+renderSelection();
+fetchStatus();
 
 themeBtn.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 helpBtn.addEventListener('click', () => helpDialog.showModal());
@@ -631,6 +584,12 @@ cropDialog.addEventListener('click', (event) => {
 });
 lineWeight.addEventListener('input', () => lineWeightValue.textContent = weightLabels[Number(lineWeight.value) - 1]);
 detailLevel.addEventListener('input', () => detailValue.textContent = detailLabels[Number(detailLevel.value) - 1]);
+
+selectionLayer.addEventListener('pointerdown', startSelectionDrag);
+selectionLayer.addEventListener('pointermove', onSelectionPointerMove);
+selectionLayer.addEventListener('pointerup', onSelectionPointerEnd);
+selectionLayer.addEventListener('pointercancel', onSelectionPointerEnd);
+window.addEventListener('resize', () => { if (cropDialog.open) updateCropViewport(); });
 
 ['dragenter', 'dragover'].forEach((eventName) => dropzone.addEventListener(eventName, (event) => {
   event.preventDefault();
@@ -653,7 +612,7 @@ resetBtn.addEventListener('click', () => resetAll(true));
 cropBtn.addEventListener('click', enterCropMode);
 cropCloseBtn.addEventListener('click', exitCropMode);
 cancelCropBtn.addEventListener('click', exitCropMode);
-selectAllBtn.addEventListener('click', () => setFullSelection());
+selectAllBtn.addEventListener('click', () => { setFullSelection(); toastMessage('전체 영역을 선택했습니다.'); });
 applyCropBtn.addEventListener('click', applyCropSelection);
 generateBtn.addEventListener('click', generateLineArt);
 compareBtn.addEventListener('click', toggleCompare);
