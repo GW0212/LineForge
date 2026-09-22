@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#f5f5f3" />
-  <meta name="description" content="Gemini API를 이용해 이미지를 흑백 라인아트로 변환하는 LINEFORGE" />
-  <title>LINEFORGE — Line Art Generator</title>
+  <meta name="description" content="브라우저 자체 선화 변환으로 이미지를 흑백 라인아트로 정리하는 LINEFORGE" />
+  <title>LINEFORGE — Browser Line Art</title>
   <link rel="icon" type="image/png" href="./favicon.png" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -19,7 +19,7 @@
     </a>
 
     <div class="header-actions">
-      <span id="apiBadge" class="api-badge checking"><i></i><span>API 확인 중</span></span>
+      <span id="apiBadge" class="api-badge ready"><i></i><span>브라우저 처리</span></span>
       <button id="helpBtn" class="icon-btn" type="button" aria-label="사용 방법" title="사용 방법">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.7 9.2A2.6 2.6 0 0 1 12.2 7c1.7 0 3 1.1 3 2.6 0 2-2.3 2.4-2.3 4.1"/><path d="M12.8 17h.01"/></svg>
       </button>
@@ -90,7 +90,7 @@
             <img id="resultImage" alt="생성된 라인아트 결과" />
             <div id="loadingOverlay" class="loading-overlay" aria-hidden="true">
               <span class="loader"></span>
-              <strong>라인을 정리하는 중</strong>
+              <strong>선화를 생성하는 중</strong>
               <span>잠시만 기다려 주세요.</span>
             </div>
           </div>
@@ -154,7 +154,7 @@
     <section class="action-bar">
       <div class="action-hint">
         <strong id="actionHintTitle">이미지를 먼저 업로드해 주세요.</strong>
-        <span id="actionHintText">누끼 이미지는 투명 영역을 자동으로 흰색 처리합니다.</span>
+        <span id="actionHintText">API 없이 브라우저 안에서 선화 변환이 진행됩니다.</span>
       </div>
       <button id="generateBtn" class="generate-btn" type="button" disabled>
         <span>라인아트 변환</span>
@@ -162,7 +162,6 @@
       </button>
     </section>
   </main>
-
 
   <dialog id="cropDialog" class="crop-dialog">
     <div class="crop-card">
@@ -202,17 +201,16 @@
     <form method="dialog" class="help-card">
       <div class="help-head"><div><small>GUIDE</small><h3>사용 방법</h3></div><button value="cancel" aria-label="닫기">×</button></div>
       <ol>
-        <li><strong>API 키 설정</strong><span><code>.env</code> 파일에 <code>GEMINI_API_KEY</code>를 입력합니다.</span></li>
-        <li><strong>이미지 업로드</strong><span>PNG/JPG/WEBP 이미지를 올립니다.</span></li>
-        <li><strong>영역 선택</strong><span>필요하면 원본의 원하는 부분만 선택해 변환 대상으로 지정합니다.</span></li>
-        <li><strong>옵션 조절</strong><span>선 굵기, 디테일, 스타일을 선택합니다.</span></li>
-        <li><strong>변환 및 저장</strong><span>완성된 결과를 확인한 뒤 PNG로 저장합니다.</span></li>
+        <li><strong>이미지 업로드</strong><span>PNG/JPG/WEBP 이미지를 올립니다. 투명 이미지는 자동으로 흰 배경 처리됩니다.</span></li>
+        <li><strong>영역 선택</strong><span>업로드 직후 변환할 부분을 선택할 수 있고, 나중에 다시 수정할 수도 있습니다.</span></li>
+        <li><strong>옵션 조절</strong><span>선 굵기, 디테일, 스타일, 내부 디테일 유지 옵션을 조절합니다.</span></li>
+        <li><strong>라인아트 변환</strong><span>모든 처리는 브라우저 안에서 이뤄지며 결과를 바로 PNG로 저장할 수 있습니다.</span></li>
       </ol>
-      <p>공개 배포 시 API 키는 HTML/JS에 넣지 말고 서버 환경변수로 관리하세요.</p>
+      <p>이 버전은 외부 API가 필요 없어서 GitHub Pages 같은 정적 웹 호스팅에서도 바로 사용할 수 있습니다.</p>
     </form>
   </dialog>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"><span id="toastText"></span></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="./app.js" defer></script>
 </body>
 </html>

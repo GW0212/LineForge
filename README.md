@@ -1,57 +1,30 @@
-# LINEFORGE — GitHub + Render 배포용
+# LINEFORGE — Browser Line Art Edition
 
-이 ZIP은 **GitHub에 그대로 업로드하는 최종본**입니다.
-API 키는 소스에 들어있지 않으며, Render에서 비공개 환경변수로 한 번만 입력하면 됩니다.
+이미지를 업로드하면 **브라우저 안에서 직접** 흰 배경 + 검은 선 중심의 라인아트로 변환하는 정적 웹사이트입니다.
 
-## 가장 쉬운 배포 방법
+## 핵심 기능
+- 이미지 업로드 (PNG / JPG / WEBP)
+- 업로드 후 **영역 선택** 가능
+- 선 굵기 / 디테일 / 스타일 / 내부 디테일 설정
+- 결과를 PNG로 저장
+- 다크 / 화이트 모드 지원
+- 모바일 터치 조작 대응
+- **외부 API, API 키, Render 필요 없음**
 
-### 1. GitHub에 업로드
-1. GitHub에서 새 저장소를 만듭니다.
-2. 이 ZIP을 압축 해제합니다.
-3. 압축을 풀었을 때 나온 파일들을 **전부 저장소 최상위(root)** 에 업로드합니다.
-4. Commit 합니다.
+## 배포 방식
+이 버전은 정적 사이트라서 아래 중 아무 방식으로나 바로 사용할 수 있습니다.
+- GitHub Pages
+- Netlify
+- Vercel(정적 배포)
+- 일반 웹호스팅
+- 로컬에서 index.html 직접 실행
 
-중요: `.env` 파일이나 실제 Gemini API 키를 GitHub에 올리지 마세요.
-
-### 2. Render에 GitHub 연결
-1. https://render.com 에 로그인합니다.
-2. `New` → `Blueprint`를 선택합니다.
-3. 방금 만든 GitHub 저장소를 연결합니다.
-4. 저장소 루트의 `render.yaml`이 자동으로 인식됩니다.
-
-### 3. Gemini API 키 입력
-Render가 `GEMINI_API_KEY` 값을 요구하면 본인의 Gemini API 키를 입력합니다.
-이 값은 GitHub 소스에 저장되지 않습니다.
-
-그 다음 Deploy / Apply를 진행하면 됩니다.
-배포가 끝나면 Render가 `https://...onrender.com` 형식의 사이트 주소를 제공합니다.
-
-## 필요한 값
-- GEMINI_API_KEY : 직접 입력
-- GEMINI_IMAGE_MODEL : render.yaml에 이미 설정됨
-- GEMINI_IMAGE_SIZE : render.yaml에 이미 설정됨
+## GitHub Pages 업로드 방법
+1. ZIP 압축 해제
+2. 파일들을 GitHub 저장소에 업로드
+3. GitHub Pages 활성화
+4. 제공되는 Pages URL로 접속
 
 ## 주의
-GitHub Pages는 사용하지 마세요. 이 프로젝트는 `server.js` Node 서버가 필요합니다.
-
-
-## 이미지 출력 호환성
-
-Gemini Interactions API에는 이미지 출력 형식을 `image/jpeg`로 요청하고, 브라우저에서 결과를 PNG로 변환한 뒤 저장합니다. 화면의 **PNG 저장** 기능은 그대로 PNG 파일을 내려받습니다.
-
-
-- 업로드 후 원본 이미지에서 **영역 선택** 버튼으로 변환할 부분만 지정할 수 있습니다.
-- 오류/완료/안내 메시지는 **화면 중앙**에 표시됩니다.
-
-## Gemini 이미지 API 과금 안내
-
-`gemini-3.1-flash-image` 이미지 생성/편집은 현재 Gemini API 무료 등급에서 제공되지 않습니다.
-Render 환경변수에 API 키가 정상 연결되어 있어도 프로젝트가 Free Tier이면 `limit: 0` / `429 RESOURCE_EXHAUSTED`가 발생할 수 있습니다.
-Google AI Studio에서 해당 API 키가 속한 프로젝트에 Billing을 연결한 뒤 사용하세요.
-이 프로젝트는 출력 크기를 기본 1K로 설정해 비용을 낮추도록 구성되어 있습니다.
-
-## 영역 선택
-
-이미지를 업로드하면 영역 선택 창이 자동으로 화면 중앙에 열립니다.
-선택 박스를 이동하거나 모서리를 드래그해 범위를 지정한 뒤 `영역 적용`을 누르면 선택한 부분만 Gemini에 전달됩니다.
-`영역 선택` 버튼으로 언제든 다시 수정할 수 있습니다.
+- 모든 변환은 브라우저에서 처리되므로, 너무 큰 이미지는 기기 성능에 따라 시간이 조금 걸릴 수 있습니다.
+- 투명 배경 이미지는 자동으로 흰 배경 위에 합성됩니다.
