@@ -1,0 +1,12 @@
+{
+  "name": "lineforge-gemini-lineart",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gemini API 기반 이미지 라인아트 변환기",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
