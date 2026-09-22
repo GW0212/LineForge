@@ -120,6 +120,59 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+async function convertImageBlobToPng(blob) {
+  if (blob.type === 'image/png') return blob;
+
+  let bitmap;
+  try {
+    if ('createImageBitmap' in window) {
+      bitmap = await createImageBitmap(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close?.();
+      return await new Promise((resolve, reject) => {
+        canvas.toBlob((png) => png ? resolve(png) : reject(new Error('PNG 변환에 실패했습니다.')), 'image/png');
+      });
+    }
+  } catch (error) {
+    bitmap?.close?.();
+    console.warn('createImageBitmap PNG conversion fallback:', error);
+  }
+
+  return await new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob((png) => {
+          URL.revokeObjectURL(url);
+          png ? resolve(png) : reject(new Error('PNG 변환에 실패했습니다.'));
+        }, 'image/png');
+      } catch (error) {
+        URL.revokeObjectURL(url);
+        reject(error);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('결과 이미지를 읽지 못했습니다.'));
+    };
+    img.src = url;
+  });
+}
+
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -505,7 +558,8 @@ generateBtn.addEventListener('click', async () => {
     if (!payload.imageBase64) throw new Error('결과 이미지를 받지 못했습니다.');
 
     const bytes = Uint8Array.from(atob(payload.imageBase64), (c) => c.charCodeAt(0));
-    resultBlob = new Blob([bytes], { type: payload.mimeType || 'image/png' });
+    const apiImageBlob = new Blob([bytes], { type: payload.mimeType || 'image/jpeg' });
+    resultBlob = await convertImageBlobToPng(apiImageBlob);
     if (resultUrl) URL.revokeObjectURL(resultUrl);
     resultUrl = URL.createObjectURL(resultBlob);
     resultImage.src = resultUrl;

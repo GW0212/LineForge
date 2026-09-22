@@ -132,7 +132,7 @@ async function handleLineart(req, res) {
         ],
         response_format: {
           type: 'image',
-          mime_type: 'image/png',
+          mime_type: 'image/jpeg',
           image_size: process.env.GEMINI_IMAGE_SIZE || '2K'
         }
       })
@@ -157,7 +157,7 @@ async function handleLineart(req, res) {
     }
 
     if (!image?.data) return json(res, 502, { error: 'Gemini 응답에서 생성된 이미지를 찾지 못했습니다.' });
-    return json(res, 200, { imageBase64: image.data, mimeType: image.mime_type || 'image/png' });
+    return json(res, 200, { imageBase64: image.data, mimeType: image.mime_type || 'image/jpeg' });
   } catch (error) {
     console.error('[lineart]', error);
     return json(res, error.status || 500, { error: error.message || '서버 오류가 발생했습니다.' });
