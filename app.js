@@ -2,7 +2,10 @@ const $ = (sel) => document.querySelector(sel);
 const fileInput = $('#fileInput');
 const dropzone = $('#dropzone');
 const sourceStage = $('#sourceStage');
-const sourceStageInner = $('#sourceStageInner');
+const cropStageInner = $('#cropStageInner');
+const cropDialog = $('#cropDialog');
+const cropPreviewImage = $('#cropPreviewImage');
+const cropCloseBtn = $('#cropCloseBtn');
 const sourceImage = $('#sourceImage');
 const sourceMeta = $('#sourceMeta');
 const resultStage = $('#resultStage');
@@ -13,7 +16,6 @@ const cropBtn = $('#cropBtn');
 const selectionLayer = $('#selectionLayer');
 const selectionBox = $('#selectionBox');
 const selectionSize = $('#selectionSize');
-const selectionToolbar = $('#selectionToolbar');
 const selectAllBtn = $('#selectAllBtn');
 const cancelCropBtn = $('#cancelCropBtn');
 const applyCropBtn = $('#applyCropBtn');
@@ -34,6 +36,7 @@ const preserveDetails = $('#preserveDetails');
 const actionHintTitle = $('#actionHintTitle');
 const actionHintText = $('#actionHintText');
 const toast = $('#toast');
+const toastText = $('#toastText');
 
 const MAX_FILE_SIZE = 12 * 1024 * 1024;
 const MIN_SELECTION = 0.08;
@@ -65,11 +68,12 @@ function setTheme(theme) {
   document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#10110f' : '#f5f5f3';
 }
 
-function toastMessage(message) {
-  toast.textContent = message;
+function toastMessage(message, duration = 3200) {
+  if (toastText) toastText.textContent = message;
+  else toast.textContent = message;
   toast.classList.add('show');
   clearTimeout(toastMessage.timer);
-  toastMessage.timer = setTimeout(() => toast.classList.remove('show'), 2300);
+  toastMessage.timer = setTimeout(() => toast.classList.remove('show'), duration);
 }
 
 function setStatus(type, text) {
@@ -296,6 +300,7 @@ async function handleFile(file) {
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     sourceUrl = URL.createObjectURL(file);
     sourceImage.src = sourceUrl;
+    cropPreviewImage.src = sourceUrl;
     sourceStage.classList.remove('empty');
     updateSelectedPreview();
     updateSourceMeta(originalFileSize);
@@ -305,8 +310,8 @@ async function handleFile(file) {
     setStatus('idle', '변환 가능');
     generateBtn.disabled = !apiConfigured;
     updateActionHint();
-    requestAnimationFrame(updateSelectionLayerGeometry);
     toastMessage(fullPreparedImage.hadTransparency ? '투명 배경을 흰색으로 정리했습니다.' : '이미지를 불러왔습니다.');
+    setTimeout(() => enterCropMode(), 120);
   } catch (error) {
     console.error(error);
     toastMessage('이미지를 불러오지 못했습니다.');
@@ -326,7 +331,6 @@ function resetAll() {
   sourceImage.removeAttribute('src');
   sourceMeta.textContent = '';
   sourceStage.classList.add('empty');
-  selectionLayer.classList.remove('visible', 'editing');
   clearResult();
   resetBtn.disabled = true;
   cropBtn.disabled = true;
@@ -348,7 +352,7 @@ function buildSettings() {
 
 function updateSelectionLayerGeometry() {
   if (!fullPreparedImage || sourceStage.classList.contains('empty')) return;
-  const box = sourceStageInner.getBoundingClientRect();
+  const box = cropStageInner.getBoundingClientRect();
   const iw = fullPreparedImage.width;
   const ih = fullPreparedImage.height;
   const scale = Math.min(box.width / iw, box.height / ih);
@@ -381,25 +385,21 @@ function enterCropMode() {
   if (!fullPreparedImage || working) return;
   cropEditing = true;
   selection = { ...appliedSelection };
-  updateSelectionLayerGeometry();
-  selectionLayer.classList.add('visible', 'editing');
-  selectionLayer.setAttribute('aria-hidden', 'false');
-  selectionToolbar.classList.add('visible');
-  selectionToolbar.setAttribute('aria-hidden', 'false');
   cropBtn.disabled = true;
   resetBtn.disabled = true;
   generateBtn.disabled = true;
-  renderSelection();
+  if (!cropDialog.open) cropDialog.showModal();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    updateSelectionLayerGeometry();
+    renderSelection();
+  }));
 }
 
 function exitCropMode(restore = true) {
-  if (!cropEditing && !selectionToolbar.classList.contains('visible')) return;
+  if (!cropEditing && !cropDialog.open) return;
   cropEditing = false;
   if (restore) selection = { ...appliedSelection };
-  selectionLayer.classList.remove('visible', 'editing');
-  selectionLayer.setAttribute('aria-hidden', 'true');
-  selectionToolbar.classList.remove('visible');
-  selectionToolbar.setAttribute('aria-hidden', 'true');
+  if (cropDialog.open) cropDialog.close();
   cropBtn.disabled = !fullPreparedImage;
   resetBtn.disabled = !fullPreparedImage;
   generateBtn.disabled = !preparedImage || !apiConfigured;
@@ -515,6 +515,7 @@ fileInput.addEventListener('change', () => {
 
 resetBtn.addEventListener('click', resetAll);
 cropBtn.addEventListener('click', enterCropMode);
+cropCloseBtn.addEventListener('click', () => exitCropMode(true));
 cancelCropBtn.addEventListener('click', () => exitCropMode(true));
 selectAllBtn.addEventListener('click', () => {
   selection = { x: 0, y: 0, w: 1, h: 1 };
@@ -525,7 +526,7 @@ applyCropBtn.addEventListener('click', applySelection);
 window.addEventListener('resize', () => {
   if (fullPreparedImage) requestAnimationFrame(updateSelectionLayerGeometry);
 });
-sourceImage.addEventListener('load', () => requestAnimationFrame(updateSelectionLayerGeometry));
+cropPreviewImage.addEventListener('load', () => { if (cropDialog.open) requestAnimationFrame(updateSelectionLayerGeometry); });
 
 generateBtn.addEventListener('click', async () => {
   if (!preparedImage || working || cropEditing) return;
@@ -554,7 +555,11 @@ generateBtn.addEventListener('click', async () => {
       })
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(payload.error || `HTTP ${response.status}`);
+      error.code = payload.code || '';
+      throw error;
+    }
     if (!payload.imageBase64) throw new Error('결과 이미지를 받지 못했습니다.');
 
     const bytes = Uint8Array.from(atob(payload.imageBase64), (c) => c.charCodeAt(0));
@@ -573,7 +578,11 @@ generateBtn.addEventListener('click', async () => {
     console.error(error);
     clearResult();
     setStatus('error', '오류');
-    toastMessage(error.message || '변환 중 오류가 발생했습니다.');
+    if (error.code === 'GEMINI_BILLING_REQUIRED' || /free.?tier|quota|rate.?limit|limit:\s*0/i.test(error.message || '')) {
+      toastMessage('Gemini 이미지 API의 무료 사용 한도가 0입니다. Google AI Studio에서 API 키가 속한 프로젝트에 Billing을 연결한 뒤 다시 시도해 주세요.', 7000);
+    } else {
+      toastMessage(error.message || '변환 중 오류가 발생했습니다.', 5000);
+    }
   } finally {
     loadingOverlay.classList.remove('active');
     loadingOverlay.setAttribute('aria-hidden', 'true');
@@ -605,4 +614,10 @@ window.addEventListener('beforeunload', () => {
   if (sourceUrl) URL.revokeObjectURL(sourceUrl);
   if (selectedPreviewUrl) URL.revokeObjectURL(selectedPreviewUrl);
   if (resultUrl) URL.revokeObjectURL(resultUrl);
+});
+
+
+cropDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  exitCropMode(true);
 });

@@ -133,7 +133,7 @@ async function handleLineart(req, res) {
         response_format: {
           type: 'image',
           mime_type: 'image/jpeg',
-          image_size: process.env.GEMINI_IMAGE_SIZE || '2K'
+          image_size: process.env.GEMINI_IMAGE_SIZE || '1K'
         }
       })
     });
@@ -141,6 +141,13 @@ async function handleLineart(req, res) {
     const data = await apiResponse.json().catch(() => ({}));
     if (!apiResponse.ok) {
       const message = data?.error?.message || data?.message || `Gemini API 오류 (${apiResponse.status})`;
+      const quotaBlocked = apiResponse.status === 429 && /free.?tier|quota|rate.?limit|limit:\s*0/i.test(message);
+      if (quotaBlocked) {
+        return json(res, 429, {
+          code: 'GEMINI_BILLING_REQUIRED',
+          error: '현재 Gemini 이미지 모델은 무료 등급에서 사용할 수 없습니다. Google AI Studio에서 이 API 키가 속한 프로젝트에 Billing을 연결한 뒤 다시 시도해 주세요.'
+        });
+      }
       return json(res, apiResponse.status, { error: message });
     }
 
